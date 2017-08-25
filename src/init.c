@@ -18,18 +18,23 @@
 #include <libopencm3/stm32/flash.h>
 #include <libopencm3/stm32/gpio.h>
 
+#if defined(BOARD_CONFIG_MCU_STM32F3) && defined(BOARD_CONFIG_OSC_HSE_8MHZ)
 static void init_clock_stm32f3_8mhz_hse(void);
+#elif defined(BOARD_CONFIG_MCU_STM32F3) && defined(BOARD_CONFIG_OSC_HSE_24MHZ)
 static void init_clock_stm32f3_24mhz_hse(void);
+#endif
 
 void init_clock(void) {
 #if defined(BOARD_CONFIG_MCU_STM32F3) && defined(BOARD_CONFIG_OSC_HSE_8MHZ)
     init_clock_stm32f3_8mhz_hse();
 #elif defined(BOARD_CONFIG_MCU_STM32F3) && defined(BOARD_CONFIG_OSC_HSE_24MHZ)
+    init_clock_stm32f3_24mhz_hse();
 #else
     #error "Could not find valid clock config"
 #endif
 }
 
+#if defined(BOARD_CONFIG_MCU_STM32F3) && defined(BOARD_CONFIG_OSC_HSE_8MHZ)
 static void init_clock_stm32f3_8mhz_hse(void)
 {
     rcc_osc_on(RCC_HSE);
@@ -59,6 +64,7 @@ static void init_clock_stm32f3_8mhz_hse(void)
     rcc_wait_for_sysclk_status(RCC_PLL);
 }
 
+#elif defined(BOARD_CONFIG_MCU_STM32F3) && defined(BOARD_CONFIG_OSC_HSE_24MHZ)
 static void init_clock_stm32f3_24mhz_hse(void)
 {
     rcc_osc_on(RCC_HSE);
@@ -87,3 +93,4 @@ static void init_clock_stm32f3_24mhz_hse(void)
     rcc_set_sysclk_source(RCC_CFGR_SW_PLL);
     rcc_wait_for_sysclk_status(RCC_PLL);
 }
+#endif
