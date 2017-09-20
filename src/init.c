@@ -25,6 +25,7 @@ void init_clock(void) {
 #if defined(BOARD_CONFIG_MCU_STM32F3) && defined(BOARD_CONFIG_OSC_HSE_8MHZ)
     init_clock_stm32f3_8mhz_hse();
 #elif defined(BOARD_CONFIG_MCU_STM32F3) && defined(BOARD_CONFIG_OSC_HSE_24MHZ)
+    init_clock_stm32f3_24mhz_hse();
 #else
     #error "Could not find valid clock config"
 #endif
