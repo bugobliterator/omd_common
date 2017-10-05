@@ -90,7 +90,7 @@ uint32_t canbus_autobaud_update(struct canbus_autobaud_state_s* state) {
     uint32_t time_since_switch_us = tnow_us - state->last_switch_us;
 
     struct canbus_msg msg;
-    if (canbus_recv_message(&msg)) {
+    if (canbus_recv_message(&msg, TIME_IMMEDIATE)) {
         state->success = true;
         return valid_baudrates[state->curr_baud_idx];
     }
@@ -107,7 +107,7 @@ uint32_t canbus_autobaud_update(struct canbus_autobaud_state_s* state) {
     return 0;
 }
 
-bool canbus_send_message(struct canbus_msg* msg) {
+bool canbus_send_message(struct canbus_msg* msg, systime_t timeout) {
     if (!msg || msg->dlc > 8) {
         return false;
     }
@@ -124,20 +124,20 @@ bool canbus_send_message(struct canbus_msg* msg) {
     txmsg.DLC = msg->dlc;
     memcpy(txmsg.data8, msg->data, msg->dlc);
 
-    if (canTransmitTimeout(&CAND1, CAN_ANY_MAILBOX, &txmsg, TIME_IMMEDIATE) == MSG_OK) {
+    if (canTransmitTimeout(&CAND1, CAN_ANY_MAILBOX, &txmsg, timeout) == MSG_OK) {
         return true;
     } else {
         return false;
     }
 }
 
-bool canbus_recv_message(struct canbus_msg* msg) {
+bool canbus_recv_message(struct canbus_msg* msg, systime_t timeout) {
     if (!msg) {
         return false;
     }
 
     CANRxFrame rxmsg;
-    if (canReceiveTimeout(&CAND1, CAN_ANY_MAILBOX, &rxmsg, TIME_IMMEDIATE) == MSG_OK) {
+    if (canReceiveTimeout(&CAND1, CAN_ANY_MAILBOX, &rxmsg, timeout) == MSG_OK) {
         if (rxmsg.IDE) {
             msg->id = rxmsg.EID;
         } else {

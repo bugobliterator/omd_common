@@ -18,6 +18,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <ch.h>
+
 struct canbus_autobaud_state_s {
     bool success;
     uint32_t start_us;
@@ -40,5 +42,5 @@ uint32_t canbus_autobaud_update(struct canbus_autobaud_state_s* state);
 bool canbus_baudrate_valid(uint32_t baud);
 uint32_t canbus_get_confirmed_baudrate(void);
 void canbus_init(uint32_t baud, bool silent);
-bool canbus_send_message(struct canbus_msg* msg);
-bool canbus_recv_message(struct canbus_msg* msg);
+bool canbus_send_message(struct canbus_msg* msg, systime_t timeout);
+bool canbus_recv_message(struct canbus_msg* msg, systime_t timeout);

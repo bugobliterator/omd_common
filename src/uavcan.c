@@ -97,6 +97,12 @@ static uint32_t started_at_sec;
 static uint32_t last_1hz_ms;
 static bool called_uavcan_ready_cb;
 
+static THD_WORKING_AREA(uavcanRxThread_wa, 1200);
+static THD_FUNCTION(UavcanRxThread, arg);
+static THD_WORKING_AREA(uavcanTxThread_wa, 256);
+static THD_FUNCTION(UavcanTxThread, arg);
+BSEMAPHORE_DECL(uavcan_tx_semaphore, true);
+
 static float getRandomFloat(void);
 static void makeNodeStatusMessage(uint8_t* buffer);
 static bool shouldAcceptTransfer(const CanardInstance* ins, uint64_t* out_data_type_signature, uint16_t data_type_id, CanardTransferType transfer_type, uint8_t source_node_id);
@@ -125,8 +131,62 @@ void uavcan_init(void)
 {
     board_get_unique_id(node_unique_id, sizeof(node_unique_id));
     canardInit(&canard, canard_memory_pool, sizeof(canard_memory_pool), onTransferReceived, shouldAcceptTransfer, NULL);
+    chThdCreateStatic(uavcanRxThread_wa, sizeof(uavcanRxThread_wa), HIGHPRIO-2, UavcanRxThread, NULL);
+    chThdCreateStatic(uavcanTxThread_wa, sizeof(uavcanTxThread_wa), HIGHPRIO-2, UavcanTxThread, NULL);
     allocation_init();
     canard_initialized = true;
+}
+
+// receive thread
+static THD_FUNCTION(UavcanRxThread, arg) {
+    while (true) {
+        struct canbus_msg msg;
+        if (canbus_recv_message(&msg, TIME_INFINITE)) {
+            const uint64_t timestamp = micros();
+
+            CanardCANFrame rx_frame;
+            rx_frame.id = msg.id & CANARD_CAN_EXT_ID_MASK;
+            if (msg.ide) rx_frame.id |= CANARD_CAN_FRAME_EFF;
+            if (msg.rtr) rx_frame.id |= CANARD_CAN_FRAME_RTR;
+            rx_frame.data_len = msg.dlc;
+            memcpy(rx_frame.data, msg.data, 8);
+
+            uavcan_acquire();
+            canardHandleRxFrame(&canard, &rx_frame, timestamp);
+            uavcan_release();
+        }
+    }
+}
+
+// transmit thread
+static THD_FUNCTION(UavcanTxThread, arg) {
+    while (true) {
+        chBSemWait(&uavcan_tx_semaphore);
+        while (true) {
+            const CanardCANFrame* txf = NULL;
+
+            uavcan_acquire();
+            txf = canardPeekTxQueue(&canard);
+            uavcan_release();
+
+            if (!txf) {
+                break;
+            }
+
+            struct canbus_msg msg;
+            msg.ide = txf->id & CANARD_CAN_FRAME_EFF;
+            msg.rtr = txf->id & CANARD_CAN_FRAME_RTR;
+            msg.id = txf->id & CANARD_CAN_EXT_ID_MASK;
+            msg.dlc = txf->data_len;
+            memcpy(msg.data, txf->data, 8);
+
+            if (canbus_send_message(&msg, TIME_INFINITE)) {
+                uavcan_acquire();
+                canardPopTxQueue(&canard);
+                uavcan_release();
+            }
+        }
+    }
 }
 
 void uavcan_update(void)
@@ -146,37 +206,6 @@ void uavcan_update(void)
     if (!allocation_running() && !called_uavcan_ready_cb && uavcan_ready_cb) {
         uavcan_ready_cb();
         called_uavcan_ready_cb = true;
-    }
-
-    // receive
-    CanardCANFrame rx_frame;
-    struct canbus_msg msg;
-    const uint64_t timestamp = micros();
-    if (canbus_recv_message(&msg)) {
-        rx_frame.id = msg.id & CANARD_CAN_EXT_ID_MASK;
-        if (msg.ide) rx_frame.id |= CANARD_CAN_FRAME_EFF;
-        if (msg.rtr) rx_frame.id |= CANARD_CAN_FRAME_RTR;
-        rx_frame.data_len = msg.dlc;
-        memcpy(rx_frame.data, msg.data, 8);
-        canardHandleRxFrame(&canard, &rx_frame, timestamp);
-    }
-
-    // transmit
-    for (const CanardCANFrame* txf = NULL; (txf = canardPeekTxQueue(&canard)) != NULL;)
-    {
-        msg.ide = txf->id & CANARD_CAN_FRAME_EFF;
-        msg.rtr = txf->id & CANARD_CAN_FRAME_RTR;
-        msg.id = txf->id & CANARD_CAN_EXT_ID_MASK;
-        msg.dlc = txf->data_len;
-        memcpy(msg.data, txf->data, 8);
-
-        bool success = canbus_send_message(&msg);
-
-        if (success) {
-            canardPopTxQueue(&canard);
-        } else {
-            break;
-        }
     }
 }
 
@@ -249,6 +278,7 @@ void uavcan_send_debug_key_value(const char* name, float val)
     memcpy(&msg_buf[4], name, name_len);
     static uint8_t transfer_id;
     canardBroadcast(&canard, UAVCAN_DEBUG_KEYVALUE_DATA_TYPE_SIGNATURE, UAVCAN_DEBUG_KEYVALUE_DATA_TYPE_ID, &transfer_id, CANARD_TRANSFER_PRIORITY_LOWEST, msg_buf, sizeof(float)+name_len);
+    chBSemSignal(&uavcan_tx_semaphore);
 }
 
 void uavcan_send_debug_logmessage(enum uavcan_loglevel_t log_level, const char* source, const char* text) {
@@ -272,6 +302,7 @@ void uavcan_send_debug_logmessage(enum uavcan_loglevel_t log_level, const char* 
     memcpy(&msg_buf[1+source_len], text, text_len);
     static uint8_t transfer_id;
     canardBroadcast(&canard, UAVCAN_DEBUG_LOGMESSAGE_DATA_TYPE_SIGNATURE, UAVCAN_DEBUG_LOGMESSAGE_DATA_TYPE_ID, &transfer_id, CANARD_TRANSFER_PRIORITY_LOWEST, msg_buf, 1+source_len+text_len);
+    chBSemSignal(&uavcan_tx_semaphore);
 }
 
 // Node ID allocation - implementation of http://uavcan.org/Specification/figures/dynamic_node_id_allocatee_algorithm.svg
@@ -315,6 +346,7 @@ static void allocation_timer_expired(void)
 
     static uint8_t transfer_id;
     canardBroadcast(&canard, UAVCAN_NODE_ID_ALLOCATION_DATA_TYPE_SIGNATURE, UAVCAN_NODE_ID_ALLOCATION_DATA_TYPE_ID, &transfer_id, CANARD_TRANSFER_PRIORITY_LOW, allocation_request, uid_size+1);
+    chBSemSignal(&uavcan_tx_semaphore);
 
     allocation_state.unique_id_offset = 0;
 }
@@ -398,6 +430,7 @@ static void process1HzTasks(void)
         static uint8_t transfer_id;
 
         canardBroadcast(&canard, UAVCAN_NODE_STATUS_DATA_TYPE_SIGNATURE, UAVCAN_NODE_STATUS_DATA_TYPE_ID, &transfer_id, CANARD_TRANSFER_PRIORITY_LOWEST, buffer, UAVCAN_NODE_STATUS_MESSAGE_SIZE);
+        chBSemSignal(&uavcan_tx_semaphore);
     }
 }
 
@@ -434,6 +467,7 @@ static void handle_get_node_info_request(CanardInstance* ins, CanardRxTransfer* 
     const size_t total_size = 41 + name_len;
 
     canardRequestOrRespond(ins, transfer->source_node_id, UAVCAN_GET_NODE_INFO_DATA_TYPE_SIGNATURE, UAVCAN_GET_NODE_INFO_DATA_TYPE_ID, &transfer->transfer_id, transfer->priority, CanardResponse, buffer, total_size);
+    chBSemSignal(&uavcan_tx_semaphore);
 }
 
 static void handle_restart_node_request(CanardInstance* ins, CanardRxTransfer* transfer)
@@ -451,6 +485,7 @@ void uavcan_send_restart_response(struct uavcan_transfer_info_s* transfer_info, 
     canardEncodeScalar(resp_buf, 0, 1, &ok);
 
     canardRequestOrRespond(transfer_info->canardInstance, transfer_info->remote_node_id, UAVCAN_RESTARTNODE_DATA_TYPE_SIGNATURE, UAVCAN_RESTARTNODE_DATA_TYPE_ID, &transfer_info->transfer_id, transfer_info->priority, CanardResponse, resp_buf, UAVCAN_RESTARTNODE_RESPONSE_MAX_SIZE);
+    chBSemSignal(&uavcan_tx_semaphore);
 }
 
 static void uavcan_encode_param_value(const struct uavcan_param_value_s* msg, void* buf, uint32_t* ofs) {
@@ -569,6 +604,7 @@ void uavcan_send_param_getset_response(struct uavcan_transfer_info_s* transfer_i
     }
 
     canardRequestOrRespond(transfer_info->canardInstance, transfer_info->remote_node_id, UAVCAN_PARAM_GETSET_DATA_TYPE_SIGNATURE, UAVCAN_PARAM_GETSET_DATA_TYPE_ID, &transfer_info->transfer_id, transfer_info->priority, CanardResponse, buf, ofs/8);
+    chBSemSignal(&uavcan_tx_semaphore);
 }
 
 static void handle_param_executeopcode_request(CanardInstance* ins, CanardRxTransfer* transfer) {
@@ -592,6 +628,7 @@ void uavcan_send_param_executeopcode_response(struct uavcan_transfer_info_s* tra
     canardEncodeScalar(buf, ofs, 1, &response->ok);
 
     canardRequestOrRespond(transfer_info->canardInstance, transfer_info->remote_node_id, UAVCAN_PARAM_EXECUTEOPCODE_DATA_TYPE_SIGNATURE, UAVCAN_PARAM_EXECUTEOPCODE_DATA_TYPE_ID, &transfer_info->transfer_id, transfer_info->priority, CanardResponse, buf, ofs/8);
+    chBSemSignal(&uavcan_tx_semaphore);
 }
 
 static void handle_file_beginfirmwareupdate_request(CanardInstance* ins, CanardRxTransfer* transfer)
@@ -625,6 +662,7 @@ void uavcan_send_file_beginfirmwareupdate_response(struct uavcan_transfer_info_s
     size_t total_size = error_message_len+1;
 
     canardRequestOrRespond(transfer_info->canardInstance, transfer_info->remote_node_id, UAVCAN_FILE_BEGINFIRMWAREUPDATE_DATA_TYPE_SIGNATURE, UAVCAN_FILE_BEGINFIRMWAREUPDATE_DATA_TYPE_ID, &transfer_info->transfer_id, transfer_info->priority, CanardResponse, buf, total_size);
+    chBSemSignal(&uavcan_tx_semaphore);
 }
 
 static uint8_t file_read_transfer_id;
@@ -640,6 +678,7 @@ uint8_t uavcan_send_file_read_request(uint8_t remote_node_id, const uint64_t off
 
     uint8_t transfer_id = file_read_transfer_id;
     canardRequestOrRespond(&canard, remote_node_id, UAVCAN_FILE_READ_DATA_TYPE_SIGNATURE, UAVCAN_FILE_READ_DATA_TYPE_ID, &file_read_transfer_id, CANARD_TRANSFER_PRIORITY_LOWEST, CanardRequest, buf, total_size);
+    chBSemSignal(&uavcan_tx_semaphore);
 
     return transfer_id;
 }
