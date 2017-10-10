@@ -17,6 +17,7 @@
 #include <libopencm3/stm32/rcc.h>
 #include <libopencm3/cm3/systick.h>
 
+static uint32_t systick_period_ns;
 static uint32_t counts_per_us;
 static uint32_t counts_per_ms;
 static volatile uint32_t system_millis;
@@ -25,6 +26,7 @@ void sys_tick_handler(void);
 
 void timing_init(void)
 {
+    systick_period_ns =1000000000UL/rcc_ahb_frequency;
     counts_per_ms = rcc_ahb_frequency/1000UL;
     counts_per_us = rcc_ahb_frequency/1000000UL;
     systick_set_reload(counts_per_ms-1); // 1 ms
@@ -62,4 +64,26 @@ void sys_tick_handler(void)
     if (systick_get_countflag()) {
         system_millis++;
     }
+}
+
+void nsleep(uint32_t delay_ns) {
+    uint32_t starting_value_systicks;
+    starting_value_systicks = systick_get_value();
+    while (timing_timeSinceMark_ns(starting_value_systicks) < delay_ns);
+}
+
+/* For measuring durations less than 1mS */
+uint32_t timing_timeSinceMark_ns(uint32_t starting_value_systicks) {
+    uint32_t final_value_systicks;
+    uint32_t duration_systicks;
+    uint32_t duration_ns;
+
+    final_value_systicks = systick_get_value();
+    if (final_value_systicks > starting_value_systicks){
+        duration_systicks = (starting_value_systicks + counts_per_ms - final_value_systicks);
+    } else {
+        duration_systicks = (starting_value_systicks - final_value_systicks);
+    }
+    duration_ns = duration_systicks * systick_period_ns;
+    return duration_ns;
 }

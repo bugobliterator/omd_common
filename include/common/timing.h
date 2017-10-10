@@ -21,3 +21,5 @@ void timing_init(void);
 uint32_t millis(void);
 uint32_t micros(void);
 void usleep(uint32_t delay);
+void nsleep(uint32_t delay_ns);
+uint32_t timing_timeSinceMark_ns(uint32_t starting_value_systicks);
