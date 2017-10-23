@@ -87,3 +87,21 @@ uint32_t timing_timeSinceMark_ns(uint32_t starting_value_systicks) {
     duration_ns = duration_systicks * systick_period_ns;
     return duration_ns;
 }
+
+//static uint64 timing_base_time_us = 0;
+uint64_t timing_get_time_us(void) {
+    return (uint64_t)millis() * (1000UL);
+}
+
+uint64_t timing_time_mark_in_us(time_mark_t *time_mark) {
+    return *time_mark;
+}
+
+void timing_set_time_mark(time_mark_t *time_mark) {
+    *time_mark = timing_get_time_us();
+}
+
+uint64_t timing_time_since_mark_us(time_mark_t *time_mark) {
+    return timing_get_time_us() - timing_time_mark_in_us(time_mark);
+}
+
